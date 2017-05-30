@@ -49,7 +49,7 @@ type ListenerConfig struct {
 	Topic                   string
 	Channel                 string
 	Lookup                  []string
-	HandlerFunc             handlerFunc
+	HandlerFunc             HandlerFunc
 	HandlerConcurrency      int
 	DialTimeout             time.Duration
 	ReadTimeout             time.Duration

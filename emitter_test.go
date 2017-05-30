@@ -83,6 +83,83 @@ func TestEmitterEmitAsync(t *testing.T) {
 	}
 }
 
+func TestEmitterEmitBulkAsync(t *testing.T) {
+	emitter, err := NewEmitter(EmitterConfig{})
+	if err != nil {
+		t.Errorf("Expected to initialize emitter %s", err)
+	}
+	amountReply := 0
+	var wg sync.WaitGroup
+	wg.Add(3)
+	type event struct{ Name string }
+	e := []interface{}{event{"event1"}, event{"event2"}, event{"event3"}}
+
+	if err := emitter.EmitBulkAsync("testEmitBulk", e); err != nil {
+		t.Errorf("Expected to emit message %s", err)
+	}
+
+	handler := func(message *Message) (reply interface{}, err error) {
+		var e event
+		err = message.DecodePayload(&e)
+		if err != nil {
+			t.Errorf("Expected payload to decode correctly %s", err)
+		}
+
+		message.Finish()
+		amountReply++
+		wg.Done()
+		return
+	}
+
+	if err := On(ListenerConfig{
+		Topic:       "testEmitBulk",
+		Channel:     "testEmitBulk",
+		HandlerFunc: handler,
+	}); err != nil {
+		t.Errorf("Expected to listen a message %s", err)
+	}
+
+	wg.Wait()
+	if amountReply != 3 {
+		t.Errorf("Expected amount of replies %d", amountReply)
+	}
+}
+
+func TestEmitAndWaitForResultWithTimeout(t *testing.T) {
+	emitter, err := NewEmitter(EmitterConfig{})
+	if err != nil {
+		t.Errorf("Expected to initialize emitter %s", err)
+	}
+
+	_, err = emitter.EmitAndWaitForResultWithTimeout("test", "test", 5*time.Millisecond)
+	if err != ErrTimeoutOccurred {
+		t.Errorf("Expected timeout to occur %s", err)
+	}
+
+	handler := func(message *Message) (reply interface{}, err error) {
+		reply = 1
+		message.Finish()
+		return
+	}
+
+	if err := On(ListenerConfig{
+		Topic:       "test",
+		Channel:     "test",
+		HandlerFunc: handler,
+	}); err != nil {
+		t.Errorf("Expected to listen a message %s", err)
+	}
+
+	result, err := emitter.EmitAndWaitForResultWithTimeout("test", "test", 5*time.Second)
+	if err == ErrTimeoutOccurred {
+		t.Errorf("Unexpected %s", err)
+	}
+	if result != "1" {
+		t.Errorf("Reply was incorrect %s", "reply")
+	}
+
+}
+
 func TestEmitterRequest(t *testing.T) {
 	emitter, err := NewEmitter(EmitterConfig{})
 	if err != nil {

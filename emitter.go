@@ -4,25 +4,32 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	nsq "github.com/nsqio/go-nsq"
 )
+
+var ErrTimeoutOccurred error = errors.New("Timeout reached")
 
 // Emitter exposes a interface for emitting and listening for events.
 type Emitter interface {
 	Emit(topic string, payload interface{}) error
 	EmitAsync(topic string, payload interface{}) error
-	Request(topic string, payload interface{}, handler handlerFunc) error
+	EmitBulkAsync(topic string, payload []interface{}) error
+	Request(topic string, payload interface{}, handler HandlerFunc) error
+	EmitAndWaitForResultWithTimeout(topic string, payload interface{}, timeoutDuration time.Duration) (interface{}, error)
 }
 
 type eventEmitter struct {
 	*nsq.Producer
-	address string
+	address  string
+	Lookupds []string
 }
 
 // NewEmitter returns a new eventEmitter configured with the
@@ -41,7 +48,7 @@ func NewEmitter(ec EmitterConfig) (emitter Emitter, err error) {
 		return
 	}
 
-	emitter = &eventEmitter{producer, address}
+	emitter = &eventEmitter{producer, address, []string{}}
 
 	return
 }
@@ -63,6 +70,33 @@ func (ee eventEmitter) Emit(topic string, payload interface{}) (err error) {
 	err = ee.Publish(topic, body)
 
 	return
+}
+
+func (ee *eventEmitter) EmitAndWaitForResultWithTimeout(topic string, payload interface{}, timeoutDuration time.Duration) (interface{}, error) {
+	var result interface{}
+	if err := ee.Request(topic, &payload, func(message *Message) (reply interface{}, err error) {
+		result = string(message.Payload)
+		message.Finish()
+		return
+	}); err != nil {
+		// handle failure to listen a message
+		return nil, err
+	}
+
+	timeout := time.NewTimer(timeoutDuration)
+
+	for {
+		select {
+		case <-timeout.C:
+			return nil, ErrTimeoutOccurred
+		default:
+			if result != nil {
+				return result, nil
+			}
+
+			<-time.After(50 * time.Millisecond)
+		}
+	}
 }
 
 // Emit emits a message to a specific topic using nsq producer, but does not wait for
@@ -99,10 +133,46 @@ func (ee eventEmitter) EmitAsync(topic string, payload interface{}) (err error) 
 	return
 }
 
+// Emit bulk emits multiple messages to a specific topic using nsq producer, but does not wait for
+// the response from `nsqd`. Returns an error if encoding payload fails and
+// logs to console if an error occurred while publishing the message.
+func (ee eventEmitter) EmitBulkAsync(topic string, payloads []interface{}) error {
+	var err error
+	if len(topic) == 0 {
+		err = ErrTopicRequired
+		return err
+	}
+	for _, message := range payloads {
+		body, err := ee.encodeMessage(&message, "")
+		if err != nil {
+			return err
+		}
+
+		responseChan := make(chan *nsq.ProducerTransaction, 1)
+
+		if err = ee.PublishAsync(topic, body, responseChan, ""); err != nil {
+			return err
+		}
+
+		go func(responseChan chan *nsq.ProducerTransaction) {
+			for {
+				select {
+				case trans := <-responseChan:
+					if trans.Error != nil {
+						log.Fatalf(trans.Error.Error())
+					}
+				}
+			}
+		}(responseChan)
+	}
+
+	return err
+}
+
 // Request a RPC like method which implements request/reply pattern using nsq producer and consumer.
 // Returns an non-nil err if an error occurred while creating or listening to the internal
 // reply topic or encoding the message payload fails or while publishing the message.
-func (ee eventEmitter) Request(topic string, payload interface{}, handler handlerFunc) (err error) {
+func (ee eventEmitter) Request(topic string, payload interface{}, handler HandlerFunc) (err error) {
 	if len(topic) == 0 {
 		err = ErrTopicRequired
 		return

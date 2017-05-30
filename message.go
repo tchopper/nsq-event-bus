@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"encoding/json"
 
 	nsq "github.com/nsqio/go-nsq"
@@ -12,6 +13,7 @@ type Message struct {
 	*nsq.Message
 	ReplyTo string
 	Payload []byte
+	Context context.Context `json:"-"`
 }
 
 // NewMessage returns a new bus.Message.
@@ -19,6 +21,7 @@ func NewMessage(payload []byte, replyTo string) *Message {
 	return &Message{
 		Payload: payload,
 		ReplyTo: replyTo,
+		Context: context.Background(),
 	}
 }
 
